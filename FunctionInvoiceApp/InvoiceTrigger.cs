@@ -12,21 +12,20 @@ using Microsoft.Extensions.Options;
 using System.Linq;
 using System.Security.Cryptography;
 using FunctionInvoiceApp.Dto;
-using Microsoft.ApplicationInsights.Extensibility;
 using Microsoft.ApplicationInsights;
 using Xero.NetStandard.OAuth2.Config;
 using System.Net.Http;
 using Xero.NetStandard.OAuth2.Client;
 using Xero.NetStandard.OAuth2.Token;
 using Xero.NetStandard.OAuth2.Model.Accounting;
-using Xero.NetStandard.OAuth2.Token;
 using Xero.NetStandard.OAuth2.Api;
-using Xero.NetStandard.OAuth2.Config;
-using Xero.NetStandard.OAuth2.Client;
 using FunctionInvoiceApp.Utility;
 using Microsoft.ApplicationInsights.DataContracts;
 using FunctionInvoiceApp.Helper;
 using System.Collections.Generic;
+using Azure.Storage.Queues;
+using Azure.Storage.Queues.Models;
+using Microsoft.ApplicationInsights.Extensibility;
 
 namespace FunctionInvoiceApp
 {
@@ -38,33 +37,51 @@ namespace FunctionInvoiceApp
         private readonly TelemetryClient _telemetryClient;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly TokenUtilities _tokenUtilities;
-        public InvoiceTrigger(ILogger<InvoiceTrigger> log, IOptions<WebhookSettings> webHookSettings, IOptions<XeroConfiguration> xeroConfig, IHttpClientFactory httpClientFactory, 
-            TelemetryClient telemetryClient, TokenUtilities tokenUtilities)
+        private readonly QueueClient _queueClient;
+        public InvoiceTrigger(IOptions<WebhookSettings> webHookSettings, IOptions<XeroConfiguration> xeroConfig, IHttpClientFactory httpClientFactory, 
+            TokenUtilities tokenUtilities, QueueClient queueClient)
         {
-            _telemetryClient = telemetryClient;
             _webhookSettings = webHookSettings;
             _xeroConfig = xeroConfig;
             _httpClientFactory = httpClientFactory;
             _tokenUtilities = tokenUtilities;
+            _queueClient = queueClient;
+            _telemetryClient = TelemetryClientHelper.GetInstance();
         }
 
         [FunctionName("Webhook")]
         public async Task<IActionResult> Webhook(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = null)] HttpRequest req)
         {
-            _telemetryClient.TrackTrace("Webhook triggered!", SeverityLevel.Information);
-
-            var reader = new StreamReader(req.Body);
-            var payloadString = await reader.ReadToEndAsync();
-
-            var signature = req.Headers[_webhookSettings.Value.XeroSignature].FirstOrDefault();
-
-            if (!VerifySignature(payloadString, signature))
+            try
             {
-                _telemetryClient.TrackTrace("Webhook 401", SeverityLevel.Critical);
-                return new UnauthorizedResult();
+                var reader = new StreamReader(req.Body);
+                var payloadString = await reader.ReadToEndAsync();
+
+                var signature = req.Headers[_webhookSettings.Value.XeroSignature].FirstOrDefault();
+
+                if (!VerifySignature(payloadString, signature))
+                {
+                    _telemetryClient.TrackTrace("Webhook 401", SeverityLevel.Critical);
+                    return new UnauthorizedResult();
+                }
+
+                _telemetryClient.TrackTrace("Sending webhook payload to queue", SeverityLevel.Information);
+                //as per Xero, our API need to response less than 5 seconds so we need to process it separately
+
+                await _queueClient.SendMessageAsync(payloadString); 
+            }
+            catch(Exception ex)
+            {
+                _telemetryClient.TrackException(ex);
             }
 
+            return new OkResult();
+        }
+
+        [FunctionName("InvoiceQueueTrigger")]
+        public async Task InvoiceQueueTrigger([QueueTrigger("invoicequeue", Connection = "AzureWebJobsStorage")] string queueItem)
+        {
             var xeroToken = await _tokenUtilities.GetStoredToken();
             var utcTimeNow = DateTime.UtcNow;
 
@@ -78,7 +95,7 @@ namespace FunctionInvoiceApp
                 _telemetryClient.TrackTrace($@"TokenRefresh successful. Token expired at {xeroToken.ExpiresAtUtc} UTC", SeverityLevel.Information);
             }
 
-            var payload = JsonConvert.DeserializeObject<Payload>(payloadString);
+            var payload = JsonConvert.DeserializeObject<Payload>(queueItem);
 
             foreach (var payloadEvent in payload.Events)
             {
@@ -100,34 +117,6 @@ namespace FunctionInvoiceApp
                     _telemetryClient.TrackTrace("New Invoice recieved", SeverityLevel.Information, invoiceProp);
                 }
             }
-            
-            return new OkResult();
-        }
-
-        [FunctionName("TokenRefresh")]
-        public async Task TokenRefresh([TimerTrigger("0 0 */6 * * *")] TimerInfo myTimer)
-        {
-            if (myTimer.IsPastDue)
-            {
-                _telemetryClient.TrackTrace("TokenRefresh timer is delay", SeverityLevel.Warning);
-            }
-
-            try {
-
-                XeroOAuth2Token token = await _tokenUtilities.GetStoredToken();
-
-                var httpClient = _httpClientFactory.CreateClient();
-                var client = new XeroClient(_xeroConfig.Value, httpClient);
-
-                XeroOAuth2Token updatedToken = (XeroOAuth2Token)await client.RefreshAccessTokenAsync(token);
-                await _tokenUtilities.StoreToken(updatedToken);
-
-                _telemetryClient.TrackTrace($@"TokenRefresh successful. Token expired at {updatedToken.ExpiresAtUtc} UTC", SeverityLevel.Information);
-            }
-            catch (Exception ex)
-            {
-                _telemetryClient.TrackException(ex);
-            }
         }
 
         private bool VerifySignature(string payload, string signature)
@@ -140,11 +129,7 @@ namespace FunctionInvoiceApp
             {
                 byte[] hashMessage = hmac.ComputeHash(payloadByte);
                 var hashMsg = Convert.ToBase64String(hashMessage);
-                bool isMatch = hashMsg == signature;
-
-                _telemetryClient.TrackTrace($"Signature: {signature} HashMsg: {hashMsg} isMatch:{isMatch}");
-
-                return isMatch;
+                return hashMsg == signature;
             }
         }
     }

@@ -1,4 +1,5 @@
-﻿using FunctionInvoiceApp.Config;
+﻿using Azure.Storage.Queues;
+using FunctionInvoiceApp.Config;
 using FunctionInvoiceApp.Utility;
 using Microsoft.ApplicationInsights;
 using Microsoft.ApplicationInsights.Extensibility;
@@ -31,20 +32,11 @@ namespace MyNamespace
                 });
 
             builder.Services.AddHttpClient();
-
-            var telemetryConfiguration = TelemetryConfiguration.CreateDefault();
-            telemetryConfiguration.ConnectionString = Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING");
-            var telemetryClient = new TelemetryClient(telemetryConfiguration);
-
-            builder.Services.AddSingleton<TelemetryClient>(telemetryClient);
             builder.Services.AddSingleton<TokenUtilities>(new TokenUtilities());
-            /*
-            builder.Services.AddSingleton<IMyService>((s) => {
-                return new MyService();
-            });
 
-            builder.Services.AddSingleton<ILoggerProvider, Logger>();
-            */
+            var queueClient = new QueueClient(Environment.GetEnvironmentVariable("AzureWebJobsStorage"), "invoicequeue");
+            queueClient.CreateIfNotExists();
+            builder.Services.AddSingleton<QueueClient>(queueClient);
         }
     }
 }

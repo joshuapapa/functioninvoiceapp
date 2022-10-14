@@ -25,5 +25,10 @@
         "enableResponseHeaderInjection": false
       }
     }
+  },
+  "extensions": {
+    "queues": {
+      "messageEncoding": "none"
+    }
   }
 }
