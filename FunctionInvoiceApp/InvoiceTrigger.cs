@@ -115,6 +115,15 @@ namespace FunctionInvoiceApp
                 {
                     var invoiceProp = invoice.ToStringDictionary();
                     _telemetryClient.TrackTrace("New Invoice recieved", SeverityLevel.Information, invoiceProp);
+
+                    foreach (LineItem lineItem in invoice.LineItems)
+                    {
+                        var lineItemProp = lineItem.ToStringDictionary();
+                        _telemetryClient.TrackTrace($"LineItem of Invoice {invoice.InvoiceNumber}", SeverityLevel.Information, lineItemProp);
+
+                        var itemProp = lineItem.Item.ToStringDictionary();
+                        _telemetryClient.TrackTrace($"Item of Invoice {invoice.InvoiceNumber}", SeverityLevel.Information, itemProp);
+                    }
                 }
             }
         }
