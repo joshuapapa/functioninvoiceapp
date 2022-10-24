@@ -2,10 +2,17 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using FunctionInvoiceApp.Entity;
+using FunctionInvoiceApp.Helper;
 using Jose;
+using Microsoft.ApplicationInsights;
+using Microsoft.ApplicationInsights.DataContracts;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Org.BouncyCastle.Crypto.Parameters;
@@ -20,65 +27,70 @@ namespace EIS
         private string _submitId = string.Empty;
         private const string API_URL = "https://eis-cert.bir.gov.ph/api/invoices";
 
-        public InvoiceIssuanceCaller(SessionInfo sessionInfo)
+        private IHttpClientFactory _httpClientFactory;
+        private readonly TelemetryClient _telemetryClient;
+        public InvoiceIssuanceCaller(SessionInfo sessionInfo, IHttpClientFactory httpClientFactory)
         {
             _sessionInfo = sessionInfo;
+
+            _httpClientFactory = httpClientFactory;
+            _telemetryClient = TelemetryClientHelper.GetInstance();
         }
 
-        public string CallAPI()
+        public async Task<string> CallAPI(ElectronicInvoice eInvoice)
         {
-            DateTime utcTime = DateTime.UtcNow;
-            DateTime philippinesTime = utcTime.AddHours(8);
-            string datetime = philippinesTime.ToString("yyyyMMddHHmmss");
-
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(API_URL);
-            request.Method = "POST";
-            request.Headers.Add("Authorization", GetHmacSignature(datetime));
-            request.Headers.Add("ApplicationId", EisCredential.APPLICATION_ID);
-            request.Headers.Add("AccreditationId", EisCredential.ACCREDITATION_ID);
-            request.Headers.Add("Datetime", datetime);
-            request.Headers.Add("Content-Type", "application/json; chearset=utf-8");
-            request.Headers.Add("AuthToken", _sessionInfo.AuthenticationToken);
-
-            StreamReader reader = new StreamReader("../../../Sample_CAS_invoice.json");
-            String invoiceJsonString = reader.ReadToEnd();
-            reader.Close();
-
-            var bodyJson = new JObject();
-            bodyJson.Add("submitId", GetSubmitId());
-            bodyJson.Add("data", GetEncryptedBase64(GetJws(invoiceJsonString)));
-
-            var reqStream = new StreamWriter(request.GetRequestStream());
-            reqStream.Write(JsonConvert.SerializeObject(bodyJson, Formatting.None));
-            reqStream.Close();
-
             try
             {
-                HttpWebResponse response = (HttpWebResponse)request.GetResponse();
-                StreamReader respStream = new StreamReader(response.GetResponseStream());
-                string responseString = respStream.ReadToEnd();
-                respStream.Close();
-                Console.WriteLine("########### Response Data");
-                Console.WriteLine(responseString);
+                JObject jsonBodyRequest = new JObject
+                {
+                    { "submitId", GetSubmitId()},
+                    { "data", GetEncryptedBase64(JsonConvert.SerializeObject(eInvoice))}
+                };
 
-                JObject decryptJson = GetDecryptedJson(responseString);
+                var httpContent = new StringContent(jsonBodyRequest.ToString());
 
-                Console.WriteLine("##8 Decryptor Response Data");
-                Console.WriteLine("accreditationId : " + decryptJson["accreditationId"]);
-                Console.WriteLine("userId : " + decryptJson["userId"]);
-                Console.WriteLine("refSubmitId : " + decryptJson["refSubmitId"]);
-                Console.WriteLine("ackId : " + decryptJson["ackId"]);
-                Console.WriteLine("responseDtm : " + decryptJson["responseDtm"]);
-                Console.WriteLine("description : " + decryptJson["description"]);
+                string datetime = DateTime.UtcNow.AddHours(8).ToString("yyyyMMddHHmmss");
+                httpContent.Headers.Add("Authorization", GetHmacSignature(datetime));
+                httpContent.Headers.Add("ApplicationId", EisCredential.APPLICATION_ID);
+                httpContent.Headers.Add("AccreditationId", EisCredential.ACCREDITATION_ID);
+                httpContent.Headers.Add("Datetime", datetime);
+                httpContent.Headers.ContentType = new MediaTypeHeaderValue("application/json; charset=utf-8");
+                httpContent.Headers.Add("AuthToken", _sessionInfo.AuthenticationToken);
 
-                return _submitId;
+                HttpClient httpClient = _httpClientFactory.CreateClient();
+                var response = await httpClient.PostAsync(API_URL, httpContent);
+
+                string responseString = await response.Content.ReadAsStringAsync();
+
+                JObject jsonResponse = JObject.Parse(responseString);
+                if (jsonResponse["status"].ToString() == "1")
+                {
+                    JObject decryptData = GetDecryptedJson(responseString);
+
+                    Dictionary<string, string> propDictionary = new Dictionary<string, string>();
+                    propDictionary.Add("accreditationId", decryptData["accreditationId"].ToString());
+                    propDictionary.Add("userId", decryptData["userId"].ToString());
+                    propDictionary.Add("refSubmitId", decryptData["refSubmitId"].ToString());
+                    propDictionary.Add("ackId", decryptData["ackId"].ToString());
+                    propDictionary.Add("responseDtm", decryptData["responseDtm"].ToString());
+                    propDictionary.Add("description", decryptData["description"].ToString());
+
+                    _telemetryClient.TrackTrace("Decryptor Response Data", SeverityLevel.Information, propDictionary);
+
+                    return _submitId;
+                }
+                else
+                {
+                    var errorMessage = jsonResponse["errorDetails"]["errorCode"].ToString() + ": " + jsonResponse["errorDetails"]["errorMessage"].ToString();
+                    _telemetryClient.TrackException(new Exception(errorMessage));
+                    return null;
+                }
+
             }
             catch (Exception ex)
             {
-                Console.WriteLine("###exception###");
-                Console.WriteLine(ex.Message);
-
-                return string.Empty;
+                _telemetryClient.TrackException(ex);
+                return null;
             }
         }
 

@@ -12,6 +12,11 @@ using System.Text.RegularExpressions;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
+using Microsoft.ApplicationInsights;
+using FunctionInvoiceApp.Helper;
+using Microsoft.ApplicationInsights.DataContracts;
+using System.Collections.Generic;
+using System.Globalization;
 
 namespace EIS
 {
@@ -19,16 +24,18 @@ namespace EIS
     {
         private const string API_URL = "https://eis-cert.bir.gov.ph/api/authentication";
         private IHttpClientFactory _httpClientFactory;
+        private readonly TelemetryClient _telemetryClient;
         public AuthenticationCaller(IHttpClientFactory httpClientFactory)
         {
             _httpClientFactory = httpClientFactory;
+            _telemetryClient = TelemetryClientHelper.GetInstance();
         }
 
         public async Task<SessionInfo> CallAPI()
         {
             try
             {
-                string AUTH_KEY = "aaaaaaaaaabbbbbbbbbbcccccccccc12";
+                string AUTH_KEY = "123j$shGDC4477@hello!";
 
                 JObject userInfo = new JObject
                 {
@@ -56,33 +63,46 @@ namespace EIS
                 var response = await httpClient.PostAsync(API_URL, httpContent);
 
                 string responseString = await response.Content.ReadAsStringAsync();
+                JObject jsonResponse = JObject.Parse(responseString);
 
-                JObject decryptJObject = GetDecryptedJson(
+                if(jsonResponse["status"].ToString() == "1")
+                {
+                    JObject decryptJObject = GetDecryptedJson(
                     secretKey: AUTH_KEY,
-                    encryptedString: JObject.Parse(responseString)["data"].ToString());
+                    encryptedString: jsonResponse["data"].ToString());
 
-                Console.WriteLine("########### Decryptor Response Data");
-                Console.WriteLine("accreditationId : " + decryptJObject["accreditationId"]);
-                Console.WriteLine("userId : " + decryptJObject["userId"]);
-                Console.WriteLine("authToken : " + decryptJObject["authToken"]);
-                Console.WriteLine("sessionKey : " + decryptJObject["sessionKey"]);
-                Console.WriteLine("tokenExpiry : " + decryptJObject["tokenExpiry"]);
+                    Dictionary<string, string> propDictionary = new Dictionary<string, string>();
+                    propDictionary.Add("accreditationId", decryptJObject["accreditationId"].ToString());
+                    propDictionary.Add("userId", decryptJObject["userId"].ToString());
+                    propDictionary.Add("authToken", decryptJObject["authToken"].ToString());
+                    propDictionary.Add("sessionKey", decryptJObject["sessionKey"].ToString());
+                    propDictionary.Add("tokenExpiry", decryptJObject["tokenExpiry"].ToString());
 
-                return new SessionInfo(
-                    decryptJObject["authToken"].ToString(),
-                    decryptJObject["sessionKey"].ToString());
+                    _telemetryClient.TrackTrace("Decryptor Response Data", SeverityLevel.Information, propDictionary);
 
+                    var tokenExpiry = DateTime.ParseExact(decryptJObject["tokenExpiry"].ToString(), "yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+
+                    return new SessionInfo(
+                        decryptJObject["authToken"].ToString(),
+                        decryptJObject["sessionKey"].ToString(),
+                        tokenExpiry
+                    );
+                }
+                else
+                {
+                    var errorMessage = jsonResponse["errorDetails"]["errorCode"].ToString() + ": " + jsonResponse["errorDetails"]["errorMessage"].ToString();
+                    _telemetryClient.TrackException(new Exception(errorMessage));
+                    return null;
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("###exception###");
-                Console.WriteLine(ex.Message);
-
+                _telemetryClient.TrackException(ex);
                 return null;
             }
         }
 
-        private static string GetHmacSignature(string datetime)
+        private string GetHmacSignature(string datetime)
         {
             string method = "POST";
             string hmacValue = datetime + method + "/api/authentication";
@@ -98,7 +118,7 @@ namespace EIS
             return signature;
         }
 
-        private static string GetEncryptedBase64(JObject userInfo)
+        private string GetEncryptedBase64(JObject userInfo)
         {
             Asn1Object obj = Asn1Object.FromByteArray(Convert.FromBase64String(
                             EisCredential.PUBLIC_KEY));
@@ -125,7 +145,7 @@ namespace EIS
                 JsonConvert.SerializeObject(userInfo, Formatting.None));
             byte[] encryptedData = rsa.Encrypt(dataToEncrypt, false);
             var encryptedBase64 = Convert.ToBase64String(encryptedData);
-            Console.WriteLine(encryptedBase64);
+            _telemetryClient.TrackTrace(encryptedBase64);
 
             return encryptedBase64;
         }

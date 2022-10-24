@@ -1,8 +1,13 @@
-﻿using System;
+﻿using FunctionInvoiceApp.Helper;
+using Microsoft.ApplicationInsights;
+using System;
 using System.IO;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace EIS
 {
@@ -12,41 +17,47 @@ namespace EIS
         private string _submitId;
         private string _apiUrl;
 
-        public InquiryResultCaller(SessionInfo sessionInfo, string submitId)
+        private IHttpClientFactory _httpClientFactory;
+        private readonly TelemetryClient _telemetryClient;
+
+        public InquiryResultCaller(SessionInfo sessionInfo, IHttpClientFactory httpClientFactory)
         {
             _sessionInfo = sessionInfo;
-            _submitId = submitId;
-            _apiUrl = "https://eis-cert.bir.gov.ph/api/invoice_result/" + submitId;
+
+            _httpClientFactory = httpClientFactory;
+            _telemetryClient = TelemetryClientHelper.GetInstance();
         }
 
-        internal void CallAPI()
+        public async Task CallAPI(string submitId)
         {
-            DateTime utcTime = DateTime.UtcNow;
-            DateTime philippinesTime = utcTime.AddHours(8);
-            string datetime = philippinesTime.ToString("yyyyMMddHHmmss");
-
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(_apiUrl);
-            request.Method = "GET";
-            request.Headers.Add("Authorization", GetHmacSignature(datetime));
-            request.Headers.Add("ApplicationId", EisCredential.APPLICATION_ID);
-            request.Headers.Add("AccreditationId", EisCredential.ACCREDITATION_ID);
-            request.Headers.Add("Datetime", datetime);
-            request.Headers.Add("Content-Type", "application/json; chearset=utf-8");
-            request.Headers.Add("AuthToken", _sessionInfo.AuthenticationToken);
-
             try
             {
-                HttpWebResponse response = (HttpWebResponse)request.GetResponse();
-                StreamReader respStream = new StreamReader(response.GetResponseStream());
-                string responseString = respStream.ReadToEnd();
-                respStream.Close();
-                Console.WriteLine("########### Response Data");
-                Console.WriteLine(responseString);
+                _submitId = submitId;
+                _apiUrl = "https://eis-cert.bir.gov.ph/api/invoice_result/" + submitId;
+
+                HttpClient httpClient = _httpClientFactory.CreateClient();
+                string datetime = DateTime.UtcNow.AddHours(8).ToString("yyyyMMddHHmmss");
+
+                using (var requestMessage = new HttpRequestMessage(HttpMethod.Get, _apiUrl))
+                {
+                    requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", GetHmacSignature(datetime));
+                    requestMessage.Headers.Add("Authorization", GetHmacSignature(datetime));
+                    requestMessage.Headers.Add("ApplicationId", EisCredential.APPLICATION_ID);
+                    requestMessage.Headers.Add("AccreditationId", EisCredential.ACCREDITATION_ID);
+                    requestMessage.Headers.Add("Datetime", datetime);
+                    requestMessage.Headers.Add("Content-Type", "application/json; charset=utf-8");
+                    requestMessage.Headers.Add("AuthToken", _sessionInfo.AuthenticationToken);
+
+                    var response = await httpClient.SendAsync(requestMessage);
+
+                    string responseString = await response.Content.ReadAsStringAsync();
+
+                    _telemetryClient.TrackTrace(responseString);
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("###exception###");
-                Console.WriteLine(ex.Message);
+                _telemetryClient.TrackException(ex);
             }
         }
 
@@ -59,7 +70,7 @@ namespace EIS
                 Encoding.UTF8.GetBytes(_sessionInfo.SessionSecretKey)))
             {
                 var hash = hmacsha256.ComputeHash(Encoding.UTF8.GetBytes(hmacValue));
-                signature = "Bearer " + Convert.ToBase64String(hash);
+                signature = Convert.ToBase64String(hash);
             }
             Console.WriteLine("######## check signature");
             Console.WriteLine(signature);
