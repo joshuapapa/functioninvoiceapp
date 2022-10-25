@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 
 namespace EIS
 {
-    internal class InquiryResultCaller
+    public class InquiryResultCaller
     {
         private SessionInfo _sessionInfo;
         private string _submitId;
@@ -19,19 +19,20 @@ namespace EIS
 
         private IHttpClientFactory _httpClientFactory;
         private readonly TelemetryClient _telemetryClient;
-
-        public InquiryResultCaller(SessionInfo sessionInfo, IHttpClientFactory httpClientFactory)
+        private readonly AuthenticationCaller _authCaller;
+        public InquiryResultCaller(IHttpClientFactory httpClientFactory, AuthenticationCaller authCaller)
         {
-            _sessionInfo = sessionInfo;
-
             _httpClientFactory = httpClientFactory;
             _telemetryClient = TelemetryClientHelper.GetInstance();
+            _authCaller = authCaller;
         }
 
         public async Task CallAPI(string submitId)
         {
             try
             {
+                _sessionInfo = await _authCaller.GetSession();
+
                 _submitId = submitId;
                 _apiUrl = "https://eis-cert.bir.gov.ph/api/invoice_result/" + submitId;
 

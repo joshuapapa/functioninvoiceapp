@@ -26,6 +26,8 @@ using System.Collections.Generic;
 using Azure.Storage.Queues;
 using Azure.Storage.Queues.Models;
 using Microsoft.ApplicationInsights.Extensibility;
+using FunctionInvoiceApp.Entity;
+using EIS;
 
 namespace FunctionInvoiceApp
 {
@@ -38,8 +40,9 @@ namespace FunctionInvoiceApp
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly TokenUtilities _tokenUtilities;
         private readonly QueueClient _queueClient;
+        private readonly InvoiceIssuanceCaller _invoiceIssuanceCaller;
         public InvoiceTrigger(IOptions<WebhookSettings> webHookSettings, IOptions<XeroConfiguration> xeroConfig, IHttpClientFactory httpClientFactory, 
-            TokenUtilities tokenUtilities, QueueClient queueClient)
+            TokenUtilities tokenUtilities, QueueClient queueClient, InvoiceIssuanceCaller invoiceIssuanceCaller)
         {
             _webhookSettings = webHookSettings;
             _xeroConfig = xeroConfig;
@@ -47,6 +50,7 @@ namespace FunctionInvoiceApp
             _tokenUtilities = tokenUtilities;
             _queueClient = queueClient;
             _telemetryClient = TelemetryClientHelper.GetInstance();
+            _invoiceIssuanceCaller = invoiceIssuanceCaller;
         }
 
         [FunctionName("Webhook")]
@@ -113,16 +117,22 @@ namespace FunctionInvoiceApp
                 var invoices = response._Invoices;
                 foreach (Invoice invoice in invoices)
                 {
+                    ElectronicInvoice eInvoice = ConvertInvoiceToEIS(invoice);
+
+                    if(eInvoice != null)
+                    {
+                        _telemetryClient.TrackTrace("Transmitting to EIS", SeverityLevel.Information, eInvoice.ToStringDictionary());
+
+                        await _invoiceIssuanceCaller.Transmit(eInvoice);
+                    }
+
                     var invoiceProp = invoice.ToStringDictionary();
                     _telemetryClient.TrackTrace("New Invoice recieved", SeverityLevel.Information, invoiceProp);
 
                     foreach (LineItem lineItem in invoice.LineItems)
                     {
-                        var lineItemProp = lineItem.ToStringDictionary();
-                        _telemetryClient.TrackTrace($"LineItem of Invoice {invoice.InvoiceNumber}", SeverityLevel.Information, lineItemProp);
-
-                        var itemProp = lineItem.Item.ToStringDictionary();
-                        _telemetryClient.TrackTrace($"Item of Invoice {invoice.InvoiceNumber}", SeverityLevel.Information, itemProp);
+                        _telemetryClient.TrackTrace($"LineItem of Invoice {invoice.InvoiceNumber}", SeverityLevel.Information, lineItem.ToStringDictionary());
+                        _telemetryClient.TrackTrace($"Item of Invoice {invoice.InvoiceNumber}", SeverityLevel.Information, lineItem.Item.ToStringDictionary());
                     }
                 }
             }
@@ -140,6 +150,13 @@ namespace FunctionInvoiceApp
                 var hashMsg = Convert.ToBase64String(hashMessage);
                 return hashMsg == signature;
             }
+        }
+
+        private ElectronicInvoice ConvertInvoiceToEIS(Invoice invoice)
+        {
+            //to do
+
+            return null;
         }
     }
 }

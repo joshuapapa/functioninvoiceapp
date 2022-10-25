@@ -17,6 +17,7 @@ using FunctionInvoiceApp.Helper;
 using Microsoft.ApplicationInsights.DataContracts;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Threading;
 
 namespace EIS
 {
@@ -25,16 +26,27 @@ namespace EIS
         private const string API_URL = "https://eis-cert.bir.gov.ph/api/authentication";
         private IHttpClientFactory _httpClientFactory;
         private readonly TelemetryClient _telemetryClient;
-        public AuthenticationCaller(IHttpClientFactory httpClientFactory)
+        private SessionInfo _sessionInfo;
+
+        private Semaphore _semaphore = new Semaphore(1, 1);
+        public AuthenticationCaller(IHttpClientFactory httpClientFactory, SessionInfo sessionInfo)
         {
             _httpClientFactory = httpClientFactory;
             _telemetryClient = TelemetryClientHelper.GetInstance();
+            _sessionInfo = sessionInfo;
         }
 
-        public async Task<SessionInfo> CallAPI()
+        public async Task<SessionInfo> GetSession()
         {
             try
             {
+                _semaphore.WaitOne();
+
+                if (_sessionInfo.TokenExpiry < DateTime.UtcNow)
+                {
+                    return _sessionInfo;
+                }
+
                 string AUTH_KEY = "123j$shGDC4477@hello!";
 
                 JObject userInfo = new JObject
@@ -82,11 +94,13 @@ namespace EIS
 
                     var tokenExpiry = DateTime.ParseExact(decryptJObject["tokenExpiry"].ToString(), "yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
 
-                    return new SessionInfo(
+                    var newSessionInfo = new SessionInfo(
                         decryptJObject["authToken"].ToString(),
                         decryptJObject["sessionKey"].ToString(),
-                        tokenExpiry
-                    );
+                        tokenExpiry);
+
+                    _sessionInfo.Update(newSessionInfo);
+                    return _sessionInfo;
                 }
                 else
                 {
@@ -100,8 +114,10 @@ namespace EIS
                 _telemetryClient.TrackException(ex);
                 return null;
             }
+            finally{
+                _semaphore.Release();
+            }
         }
-
         private string GetHmacSignature(string datetime)
         {
             string method = "POST";

@@ -21,7 +21,7 @@ using Org.BouncyCastle.Security;
 
 namespace EIS
 {
-    internal class InvoiceIssuanceCaller
+    public class InvoiceIssuanceCaller
     {
         private SessionInfo _sessionInfo;
         private string _submitId = string.Empty;
@@ -29,18 +29,20 @@ namespace EIS
 
         private IHttpClientFactory _httpClientFactory;
         private readonly TelemetryClient _telemetryClient;
-        public InvoiceIssuanceCaller(SessionInfo sessionInfo, IHttpClientFactory httpClientFactory)
+        private readonly AuthenticationCaller _authCaller;
+        public InvoiceIssuanceCaller(IHttpClientFactory httpClientFactory, AuthenticationCaller authCaller)
         {
-            _sessionInfo = sessionInfo;
-
             _httpClientFactory = httpClientFactory;
             _telemetryClient = TelemetryClientHelper.GetInstance();
+            _authCaller = authCaller;
         }
 
-        public async Task<string> CallAPI(ElectronicInvoice eInvoice)
+        public async Task<string> Transmit(ElectronicInvoice eInvoice)
         {
             try
             {
+                _sessionInfo = await _authCaller.GetSession();
+
                 JObject jsonBodyRequest = new JObject
                 {
                     { "submitId", GetSubmitId()},
